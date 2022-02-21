@@ -1,10 +1,10 @@
-//光敏电阻接线顺序：3.3V 2.2K 光敏电阻GL5528 ADC 1K GND。没风的情况下，启用light_sleep情况下温度比实际高6.0度，model_sleep模式下高
+//光敏电阻接线顺序：3.3V 2.2K 光敏电阻GL5528 ADC 1K GND。没风的情况下，启用light_sleep是测量到的温度比十几蚊度高4.7度，model_sleep模式下高
 //1.0 NTP获取网络时间成功，1637显示成功。断网时间立即停止计时。
 //1.1 增加本地计时功能，断网后也能继续显示时间，每24小时网络校时一次。NTP服务器修改为ntp6.aliyun.com，服务器位于杭州，距离较近速度更快。修改MQTT测试服务器为ly.hz.qinxinju.com，端口号1880.
 //1.21 增加DHT11、红外发射、亮度自动调节功能。1637接口为CLK12,DIO13。红外发射GPIO14，DHT11 GPIO4
 //1.22 修复上电时无wifi，即使后续有wifi也无法校时的bug。修复黑暗环境下（ldc=0时）启动数码管显示亮度过亮问题。优化开机校时速度。使用热敏电阻测温+光敏电阻测亮度（GPIO16切换），去掉DHT11。更换服务器为hz.ly.qinxinju.com，端口号1880.红外发射改为GPIO15。
 //1.23 增加蜂鸣器功能（GPIO0），整点响1秒，半点0.5秒，20：00-8:00之间不响。读取温度改为测量4次平均值(四舍五入)。修正light-sleep导致的millis()时间变慢(休眠补偿+每半小时校时)。适配硬件2.11
-//1.24 更改测温方式为公式计算，精确到小数点后2位。增加红外接收功能。增加11-13点之间的充电功能。本版本和之前的所有版本均使用“Grove - 4-Digit Display”库。
+//1.24 更改测温方式为公式计算，精确到小数点后一位。增加红外接收功能。增加11-13点之间的充电功能。增加按键识别，上键切换12/24小时制，下键开/关睡眠模式。切换到wifimanager配网模式。
 
 //智能时钟硬件通用规则：第一位产品代号固定为B，第二位显示屏类别，第三位主电路版本号（此电路影响固件适配），可酌情设第四位来区分各种不同料号（仅内部使用，可印于PCB）。产品包装、外壳中仅印刷2、3、4位，PCB可印刷全部四位或后三位。固件仅根据前三位进行匹配。
 //硬件版本2.11：红外发射管1个，GPIO15。红外接收GPIO4。输出控制：GPIO1。蜂鸣器：GPIO0。DHT11：GPIO5。温度、亮度切换：GPIO16。TM1637屏幕CLK12，DIO13。正常运行时不能进行TTL通信。默认烧录电压5V。
@@ -62,7 +62,7 @@ int  hou = 0, ld=0, G=150,R=0,B=0,x=0,NUM_LEDS=7; // 定义程序中需要用到
 String subtopiconline,subtopicdownline, subtopicOTA, subtopic, subtopic1, subtopicupdate, pubtopic, mqttid, mqttname, mqttpas = String ( ESP.getFlashChipId(), HEX); //MQTT专用参数
 const char* pubtopic1; 
 const char* subtopic2;
-unsigned long currentMillis = 0,lastDebounceTime = 0,Updatetime = 0,lasttimeupdate = 0, lastfailedMQTTtime = 0, MQTTwaitingtime = 0, lastreadtime=0, lastwificonnecttime=0, mi=0, timebc=0; //定义程序中需要用到的无符号长整形变量
+unsigned long currentMillis = 0,lastDebounceTime = 0,Updatetime = 0,lasttimeupdate = 0, lastfailedMQTTtime = 0, MQTTwaitingtime = 0, lastreadtime=0, lastwificonnecttime=0, mi=0, timebc=0, lastbeeptime=0; //定义程序中需要用到的无符号长整形变量
 float lastwd=0, wd=0;
 unsigned char timepoint = 0, lasthou=6,lastmi=0,lastsec=0,ldc=0, lastldc=8, pu=0, ota = 0, BRIGHTNESSmax=20, j=0, led=0, sm=0, beep=0;
 
@@ -98,8 +98,9 @@ void setup(){
   WiFi.mode(WIFI_STA);
   wifiMulti.addAP("sunnygu", "nm19870424");
   wifiMulti.addAP("Jiang", "jiangjiajing");
-  if(wifiMulti.run()==WL_CONNECTED){
-    //Serial.println("WIFI连接成功！");
+  while (wifiMulti.run() != WL_CONNECTED) {
+    delay(500);
+    //Serial.println("沁心居-WIFI电子钟&智能环境感知系统 正在连接wifi，请稍候...");
   }
   //Serial.println("");
   //Serial.println("WiFi链接成功");
@@ -140,7 +141,7 @@ void setup(){
 //NTP时间同步设置
   Udp.begin(localPort);
   setSyncProvider(getNtpTime);
-  setSyncInterval(86400);//设置同步时间间隔24H，即86400s8
+  setSyncInterval(21600);//设置同步时间间隔24H，即86400s，6小时21600s
 //启动OTA升级程序
   String espname;
   espname = "QXJClock-" + chipid;
@@ -243,7 +244,6 @@ void TimeUpdate(){
     digitalWrite(1,1);
   }else{
     digitalWrite(1,0);
-  }
   if(mi == 29 || mi ==59){
     if(hou < 20 && hou > 7){
       beep =1;
@@ -261,7 +261,7 @@ void  testwifi(){
       MQTTwaitingtime = 5000;
     }
     lastwificonnecttime = millis();
-    if (currentMillis - lasttimeupdate > 86400000 || lasttimeupdate == 0) {//24小时：86400s，1小时3600s，半小时1800s
+    if (currentMillis - lasttimeupdate > 21600000 || lasttimeupdate == 0) {//24小时：86400s，6小时21600s，1小时3600s，半小时1800s
       if (timeStatus() == timeSet) {
         lasthou = hour(); 
         lastmi= minute();
@@ -276,63 +276,15 @@ void  testwifi(){
     }    
   }else {
     //Serial.println("Wifi连接中断，重连中……");
+    //wifiMulti.run();
   }
 }
 
 void loop(){
-  if (currentMillis - lastDebounceTime > 60000) { //每60秒喂狗、检查WIFI连接状态、检测温度。每24小时同步一次时间
-    ESP.wdtFeed();
-    lastDebounceTime = millis(); //喂狗时间更新
-    testwifi();
-  }
-  
   currentMillis = millis(); //将millis()转化为unsigned long类型，防止millis()溢出导致的各种错误
   if(currentMillis-Updatetime> 980){//1000ms刷新一次时间显示
     TimeUpdate();
   }
-/*
-  if(led == 1){
-      //呼吸灯程序
-    for (int i = 0; i < NUM_LEDS; i++) {
-      int y=(x+17*i) % 765;
-      if(y<256 ){
-        R=y;
-        G=255-y;
-        B=0;
-      }else if(y<511 ){
-        R=510-y;
-        G=0;
-        B=y-255;
-      }else if(y<766 ){
-        R=0;
-        G=y-510;
-        B=765-y;
-      }else{
-        R=0;
-        G=255;
-        B=0;
-      }
-      pixels.setPixelColor(i, pixels.Color(R, G, B));
-    }
-    pixels.show();   // Send the updated pixel colors to the hardware.
-    x=(x+13) % 765;
-    if(j == 0){
-      while (j < BRIGHTNESSmax) {
-        pixels.setBrightness(j); 
-        pixels.show();   // Send the updated pixel colors to the hardware.
-        j++;
-        delay(10);
-      }
-    }else{
-      while (j > 0) {
-        pixels.setBrightness(j); 
-        pixels.show();   // Send the updated pixel colors to the hardware.
-        j++;
-        delay(10);
-      }
-    }
-  }
-*/
   if (irrecv.decode(&results)) {//红外接收部分
     if(results.value == 4294967295){//ffffffff代码不理会
       goto irrecend;
@@ -347,24 +299,31 @@ void loop(){
   }else{
     client.loop();
   }
-  if (ota == 1) {
-    ArduinoOTA.handle();//启动OTA升级
-  }  
-  ArduinoOTA.handle();//启动OTA升级
   if(beep == 0){
+    if (currentMillis - lastDebounceTime > 60000) { //每60秒喂狗、检查WIFI连接状态、检测温度。每24小时同步一次时间
+      ESP.wdtFeed();
+      lastDebounceTime = millis(); //喂狗时间更新
+      testwifi();
+    }
+    if (ota == 1) {
+      ArduinoOTA.handle();//启动OTA升级
+    }  
     delay(490);//用于light sleep，不可省略
   }else{
     if( mi%30 == 0 ){
       if(beep == 1){
-        analogWrite(0, 30); //打开蜂鸣器
+        analogWrite(0, 20); //打开蜂鸣器
       }
-      beep ++;
-      if( beep > ((mi+30)%60+30)/6 ){
-        analogWrite(0, 0); //关闭蜂鸣器
-        beep = 0;
+      if(millis() - lastbeeptime > 90){
+        beep++;
+        lastbeeptime = millis();
+        if( beep > ((mi+30)%60+30)/10 ){
+          analogWrite(0, 0); //关闭蜂鸣器
+          beep = 0;
+        }
       }
-    }
-    delay(99);//用于model sleep，不可省略
+   }
+    delay(1);//用于model sleep，不可省略
   }
 }
 
@@ -444,7 +403,7 @@ void update_error(int err) {
 }
 
 
-void callback(char* topic, byte* payload, unsigned int length) {
+void callback (char* topic, byte* payload, unsigned int length){
   //Serial.print("接收到消息[");
   //Serial.print(topic);
   //Serial.print("] ");
@@ -460,18 +419,24 @@ void callback(char* topic, byte* payload, unsigned int length) {
     client.unsubscribe(subtopic2);
     subtopic2 = subtopic1.c_str();
     client.subscribe(subtopic2, 1);
+    subtopic2 = subtopiconline.c_str();
+    client.subscribe(subtopic2, 1);
     subtopic2 = subtopicdownline.c_str();
     client.subscribe(subtopic2, 1);
     pu = 1;
     pubmassage();
   }else if(topic1 == subtopicdownline){//下线消息，关闭状态发送，并更改订阅为通用订阅.是否要发送一条假“遗嘱消息”呢？
-    pu = 0;
-    subtopic2 = subtopic1.c_str();
-    client.unsubscribe (subtopic2);
-    subtopic2 = subtopicdownline.c_str();
-    client.unsubscribe(subtopic2);
-    subtopic2 = subtopic.c_str();
-    client.subscribe(subtopic2, 1);
+    if(pu == 1){
+      pu = 0;
+      subtopic2 = subtopic1.c_str();
+      client.unsubscribe (subtopic2);
+      subtopic2 = subtopiconline.c_str();
+      client.unsubscribe(subtopic2);
+      subtopic2 = subtopicdownline.c_str();
+      client.unsubscribe(subtopic2);
+      subtopic2 = subtopic.c_str();
+      client.subscribe(subtopic2, 1);
+    }
   } else if (topic1 == subtopicOTA) {
     String submsgOTA;
     submsgOTA += (char)payload[0];
@@ -662,7 +627,7 @@ void reconnect() {
 if (!client.connected() && currentMillis - lastfailedMQTTtime > MQTTwaitingtime) {
     //Serial.print("正在尝试连接到MQTT服务器中...");
     // Create a random client ID
-    if (client.connect(mqttid.c_str(), mqttname.c_str(), mqttpas.c_str(),pubtopic1, 2, 1, "d", 0)) { //（客户端ID，[用户名，密码]，[遗嘱消息主题，遗嘱消息QoS，遗嘱消息是否服务器保留，遗嘱消息内容]，[cleanSession]）
+    if (client.connect(mqttid.c_str(), mqttname.c_str(), mqttpas.c_str(),pubtopic1, 2, 1, "d", 1)) { //（客户端ID，[用户名，密码]，[遗嘱消息主题，遗嘱消息QoS，遗嘱消息是否服务器保留，遗嘱消息内容]，[cleanSession]）
       //Serial.println("连接服务器成功！");
       // Once connected, publish an announcement...
       client.publish(pubtopic1, subtopic1.c_str());
@@ -736,6 +701,7 @@ void pubmassage() {
 
 
 void readtemhum(){
+  ld = analogRead(A0);
   pinMode(16, OUTPUT); //设置GPIO16为输出（测温、测量度切换，高电位为温度，输入为亮度）Rr=（3.3-V1）*（3.3-V2）/[3.3*(V2-V1)]
   digitalWrite(16,1);
   delay(1);
@@ -745,154 +711,7 @@ void readtemhum(){
   float ldf=float(ld);
   float Awf=float(Aw);
   float Rrf=1000*(3441-ldf)*(3441-Awf)/(3441*(Awf-ldf));
-  wd =1/( 1/298.15 - log(10000/Rrf)/3435)-273.15-6;//6是无风状态下的温度修正量
-/*  
-  if(Rr>18329){
-    if(Rr>28234){
-      wd=62;
-    }else if(Rr>26993){
-      wd=0;
-    }else if(Rr>25813){
-      wd=1;
-    }else if(Rr>24693){
-      wd=2;
-    }else if(Rr>23639){
-      wd=3;
-    }else if(Rr>22628){
-      wd=4;
-    }else if(Rr>21694){
-      wd=5;
-    }else if(Rr>20773){
-      wd=6;
-    }else if(Rr>19929){
-      wd=7;
-    }else if(Rr>19109){
-      wd=8;
-    }else{
-      wd=9;
-    }
-  }else if(Rr>12304){
-    if(Rr>17594){
-      wd=10;
-    }else if(Rr>16884){
-      wd=11;
-    }else if(Rr>16225){
-      wd=12;
-    }else if(Rr>15574){
-      wd=13;
-    }else if(Rr>14975){
-      wd=14;
-    }else if(Rr>14395){
-      wd=15;
-    }else if(Rr>13829){
-      wd=16;
-    }else if(Rr>13294){
-      wd=17;
-    }else if(Rr>12800){
-      wd=18;
-    }else{
-      wd=19;
-    }
-  }else if(Rr>8467){
-    if(Rr>11845){
-      wd=20;
-    }else if(Rr>11410){
-      wd=21;
-    }else if(Rr>10980){
-      wd=22;
-    }else if(Rr>10569){
-      wd=23;
-    }else if(Rr>10182){
-      wd=24;
-    }else if(Rr>9810){
-      wd=25;
-    }else if(Rr>9453){
-      wd=26;
-    }else if(Rr>9110){
-      wd=27;
-    }else if(Rr>8781){
-      wd=28;
-    }else{
-      wd=29;
-    }
-  }else if(Rr>5933){
-    if(Rr>8164){
-      wd=30;
-    }else if(Rr>7874){
-      wd=31;
-    }else if(Rr>7596){
-      wd=32;
-    }else if(Rr>7328){
-      wd=33;
-    }else if(Rr>7073){
-      wd=34;
-    }else if(Rr>6826){
-      wd=35;
-    }else if(Rr>6589){
-      wd=36;
-    }else if(Rr>6362){
-      wd=37;
-    }else if(Rr>6143){
-      wd=38;
-    }else{
-      wd=39;
-    }
-  }else if(Rr>4227){
-    if(Rr>5731){
-      wd=40;
-    }else if(Rr>5538){
-      wd=41;
-    }else if(Rr>5350){
-      wd=42;
-    }else if(Rr>5170){
-      wd=43;
-    }else if(Rr>4999){
-      wd=44;
-    }else if(Rr>4831){
-      wd=45;
-    }else if(Rr>4671){
-      wd=46;
-    }else if(Rr>4517){
-      wd=47;
-    }else if(Rr>4370){
-      wd=48;
-    }else{
-      wd=49;
-    }
-  }else if(Rr>2965){
-    if(Rr>4090){
-      wd=50;
-    }else if(Rr>3957){
-      wd=51;
-    }else if(Rr>3830){
-      wd=52;
-    }else if(Rr>3707){
-      wd=53;
-    }else if(Rr>3589){
-      wd=54;
-    }else if(Rr>3475){
-      wd=55;
-    }else if(Rr>3364){
-      wd=56;
-    }else if(Rr>3260){
-      wd=57;
-    }else if(Rr>3157){
-      wd=58;
-    }else if(Rr>3059){
-      wd=59;
-    }else{
-      wd=60;
-    }
-  }else{
-    wd=61; 
-  }
-*/
-/*
-  if(wd < 61){
-    int wdt = EEPROM.read(1); //读取温度校准数据
-    wd = wd - wdt;
-  }
-*/
+  wd =1/( 1/298.15 - log(10000/Rrf)/3435)-273.15-4.7;//4.7是没风时的温度校准系数。
   if(lastwd != wd){
     if(pu == 1){
       pubmassage();
