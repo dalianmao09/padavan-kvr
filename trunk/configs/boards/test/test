@@ -10,8 +10,8 @@
    Licensed under MIT license
  **************************************************************/
 
-#ifndef CustomWiFiManager_h
-#define CustomWiFiManager_h
+#ifndef CustomWiFiManagerRY_h
+#define CustomWiFiManagerRY_h
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
@@ -32,7 +32,7 @@ const char HTTP_FORM_START[] PROGMEM      = "<form method='get' action='wifisave
 const char HTTP_FORM_PARAM[] PROGMEM      = "<br/><input id='{i}' name='{n}' maxlength={l} placeholder='{p}' value='{v}' {c}>";
 const char HTTP_FORM_END[] PROGMEM        = "<br/><button type='submit'>确认保存</button></form>";
 const char HTTP_SCAN_LINK[] PROGMEM       = "<br/><div class=\"c\"><a href=\"/wifi\">扫描</a></div>";
-const char HTTP_SAVED[] PROGMEM           = "<div>沁心居正在尝试连接网络...<br />远程控制请微信关注“沁心居”</div>";
+const char HTTP_SAVED[] PROGMEM           = "<div>如茵正在尝试连接网络...<br />远程控制请微信关注“沁心居”</div>";
 const char HTTP_END[] PROGMEM             = "</div></body></html>";
 const char HTTP_IMAGE[] PROGMEM             = "<img class=\"c m-user-icon\" src=\"{is}\">";
 
@@ -165,7 +165,7 @@ class WiFiManager
     String   _imgBase64;
     const char*   _backgroundColor        = "#1fa3ec";
     const char*   _textColor              = "#fff";
-    const char*   _pageTitle              = "欢迎使用沁心居";
+    const char*   _pageTitle              = "欢迎使用如茵";
 
     //String        getEEPROMString(int start, int len);
     //void          setEEPROMString(int start, int len, String string);
