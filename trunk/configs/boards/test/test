@@ -10,7 +10,7 @@
    Licensed under MIT license
  **************************************************************/
 
-#include "CustomWiFiManager.h"
+#include "CustomWiFiManagerRY.h"
 
 WiFiManagerParameter::WiFiManagerParameter(const char *custom) {
   _id = NULL;
@@ -517,7 +517,7 @@ void WiFiManager::handleRoot() {
     page.replace("{is}", _imgBase64);
   }
 
-  page += String(F("<h3>沁心居智能灯联网设置</h3>"));
+  page += String(F("<h3>如茵自动浇水联网设置</h3>"));
   page += FPSTR(HTTP_PORTAL_OPTIONS);
   page += FPSTR(HTTP_END);
 
@@ -533,7 +533,7 @@ void WiFiManager::handleRoot() {
 void WiFiManager::handleWifi(boolean scan) {
 
   String page = FPSTR(HTTP_HEADER);
-  page.replace("{v}", "沁心居Wifi配置");
+  page.replace("{v}", "如茵Wifi配置");
   page += FPSTR(HTTP_SCRIPT);
   page += FPSTR(HTTP_STYLE);
   page.replace("{bc}", _backgroundColor);
