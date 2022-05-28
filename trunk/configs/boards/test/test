@@ -1,720 +1,217 @@
-//光敏电阻接线顺序：3.3V 2.2K 光敏电阻GL5528 ADC 1K GND。没风的情况下，启用light_sleep是测量到的温度比十几蚊度高4.7度，model_sleep模式下高
-//1.0 NTP获取网络时间成功，1637显示成功。断网时间立即停止计时。
-//1.1 增加本地计时功能，断网后也能继续显示时间，每24小时网络校时一次。NTP服务器修改为ntp6.aliyun.com，服务器位于杭州，距离较近速度更快。修改MQTT测试服务器为ly.hz.qinxinju.com，端口号1880.
-//1.21 增加DHT11、红外发射、亮度自动调节功能。1637接口为CLK12,DIO13。红外发射GPIO14，DHT11 GPIO4
-//1.22 修复上电时无wifi，即使后续有wifi也无法校时的bug。修复黑暗环境下（ldc=0时）启动数码管显示亮度过亮问题。优化开机校时速度。使用热敏电阻测温+光敏电阻测亮度（GPIO16切换），去掉DHT11。更换服务器为hz.ly.qinxinju.com，端口号1880.红外发射改为GPIO15。
-//1.23 增加蜂鸣器功能（GPIO0），整点响1秒，半点0.5秒，20：00-8:00之间不响。读取温度改为测量4次平均值(四舍五入)。修正light-sleep导致的millis()时间变慢(休眠补偿+每半小时校时)。适配硬件2.11
-//1.24 更改测温方式为公式计算，精确到小数点后一位。增加红外接收功能。增加11-13点之间的充电功能。增加按键识别，上键切换12/24小时制，下键开/关睡眠模式。切换到wifimanager配网模式。
+/**************************************************************
+   WiFiManager is a library for the ESP8266/Arduino platform
+   (https://github.com/esp8266/Arduino) to enable easy
+   configuration and reconfiguration of WiFi credentials using a Captive Portal
+   inspired by:
+   http://www.esp8266.com/viewtopic.php?f=29&t=2520
+   https://github.com/chriscook8/esp-arduino-apboot
+   https://github.com/esp8266/Arduino/tree/master/libraries/DNSServer/examples/CaptivePortalAdvanced
+   Built by AlexT https://github.com/tzapu
+   Licensed under MIT license
+ **************************************************************/
 
-//智能时钟硬件通用规则：第一位产品代号固定为B，第二位显示屏类别，第三位主电路版本号（此电路影响固件适配），可酌情设第四位来区分各种不同料号（仅内部使用，可印于PCB）。产品包装、外壳中仅印刷2、3、4位，PCB可印刷全部四位或后三位。固件仅根据前三位进行匹配。
-//硬件版本2.11：红外发射管1个，GPIO15。红外接收GPIO4。输出控制：GPIO1。蜂鸣器：GPIO0。DHT11：GPIO5。温度、亮度切换：GPIO16。TM1637屏幕CLK12，DIO13。正常运行时不能进行TTL通信。默认烧录电压5V。
-//摇头电机控制GPIO1。风扇电机PWM输出：GPIO14。风扇转速测量：GPIO5。
-
+#ifndef CustomWiFiManager_h
+#define CustomWiFiManager_h
 
 #include <ESP8266WiFi.h>
-#include <ESP8266WiFiMulti.h>
-#include <WiFiUdp.h>
-#include <TimeLib.h>
-#include <ArduinoOTA.h>
-#include <ESP8266mDNS.h>
-#include <Arduino.h>
-#include <EEPROM.h>
-#include <ESP8266HTTPClient.h>
-#include <ESP8266httpUpdate.h>
-#include <PubSubClient.h>
-#include <IRremoteESP8266.h>
-#include <IRrecv.h>
-#include <IRutils.h>
-#include <IRsend.h>
-#include <ir_Haier.h>
-#include <ir_Gree.h>
-#include "TM1637.h"
-#include "math.h"
-//#include <Adafruit_NeoPixel.h>
+#include <ESP8266WebServer.h>
+#include <DNSServer.h>
+#include <memory>
 
-ESP8266WiFiMulti wifiMulti;
-WiFiClient espClient;
-PubSubClient client(espClient);
-unsigned long lastMsg = 0;
-#define MSG_BUFFER_SIZE  (50)
-char msg[MSG_BUFFER_SIZE];
-
-
-
-
-
-String yjbb = "00211";//硬件版本号
-String gjbb = "124";//固件版本号
-TM1637 tm1637(12,13);//CLK,DIO
-IRHaierACYRW02 haier(15);//红外发射二极管接在GPIO15上
-IRGreeAC ac(15);//红外发射二极管接在GPIO15上
-ADC_MODE(ADC_TOUT);//ADC读取外部电压，量程1000mV，对应值为0-1023,用于测定亮度,亮度越高数值越大
-IRrecv irrecv(4);//GPIO4脚为红外信号接收脚
-decode_results results;
-
-static const char ntpServerName[] = "ntp6.aliyun.com";//授时服务器设置，阿里云NTP6授时服务器，服务器地址在杭州，速度较快
-const int timeZone = 8;//设置时区为东8区
-WiFiUDP Udp;
-unsigned int localPort = 8888;  // local port to listen for UDP packets
-time_t getNtpTime();
-int8_t TimeDisp[] = {0x00,0x00,0x00,0x00};
-int  hou = 0, ld=0, G=150,R=0,B=0,x=0,NUM_LEDS=7; // 定义程序中需要用到的整数变量
-String subtopiconline,subtopicdownline, subtopicOTA, subtopic, subtopic1, subtopicupdate, pubtopic, mqttid, mqttname, mqttpas = String ( ESP.getFlashChipId(), HEX); //MQTT专用参数
-const char* pubtopic1; 
-const char* subtopic2;
-unsigned long currentMillis = 0,lastDebounceTime = 0,Updatetime = 0,lasttimeupdate = 0, lastfailedMQTTtime = 0, MQTTwaitingtime = 0, lastreadtime=0, lastwificonnecttime=0, mi=0, timebc=0, lastbeeptime=0; //定义程序中需要用到的无符号长整形变量
-float lastwd=0, wd=0;
-unsigned char timepoint = 0, lasthou=6,lastmi=0,lastsec=0,ldc=0, lastldc=8, pu=0, ota = 0, BRIGHTNESSmax=20, j=0, led=0, sm=0, beep=0;
-
-//Adafruit_NeoPixel pixels(NUM_LEDS, 4, NEO_GRB + NEO_KHZ800);//Adafruit_NeoPixel pixels(NUM_LEDS, PIN, NEO_GRB + NEO_KHZ800);
-
-void setup(){
-  //Serial.begin(115200);
-//  pinMode(BUILTIN_LED, OUTPUT);
-  //Serial.setDebugOutput(true);
-  ESP.wdtEnable(90000);//设置喂狗时间为90秒
-  pinMode(16, INPUT); //设置GPIO16为输出（测温、测量度切换，高电位为温度，输入为亮度）
-  pinMode(0, OUTPUT); //设置GPIO0为输出（蜂鸣器）
-  pinMode(1, OUTPUT); //设置GPIO1为输出（充电控制）
-  analogWriteFreq(3500);//设置PWM频率为3.5KHz
-  analogWriteRange(256);//设置PWM精度为256级
-  analogWrite(0, 0); //关闭蜂鸣器
-  digitalWrite(1,0);//设置GPIO0为低电平（关闭充电）
-  haier.begin();
-  ac.begin();
-  EEPROM.begin(256);//设置EEPROM大小为256字节
-  irrecv.enableIRIn();  // 启动红外接收
-//ARGB初始化
-//  pixels.begin(); // INITIALIZE NeoPixel strip object (REQUIRED)
-//  pixels.clear(); // Set all pixel colors to 'off'
-  
-  //Serial.println();
-  //Serial.println("沁心居-WIFI电子钟&智能环境感知系统");
-  //Serial.print("硬件版本:");
-  //Serial.println(yjbb);
-  //Serial.print("固件版本:");
-  //Serial.println(gjbb);
-  //Serial.println("正在连接WIFI(仅支持2.4G)…… ");
-  WiFi.mode(WIFI_STA);
-  wifiMulti.addAP("sunnygu", "nm19870424");
-  wifiMulti.addAP("Jiang", "jiangjiajing");
-  while (wifiMulti.run() != WL_CONNECTED) {
-    delay(500);
-    //Serial.println("沁心居-WIFI电子钟&智能环境感知系统 正在连接wifi，请稍候...");
-  }
-  //Serial.println("");
-  //Serial.println("WiFi链接成功");
-  //Serial.println("IP address: ");
-  //Serial.println(WiFi.localIP());
-//初始化MQTT推送/订阅主题
-  String chipid = String(ESP.getChipId(), HEX);
-  String mqttnamemac;
-  mqttid = "8266-5087-" + chipid;
-  mqttnamemac = String(WiFi.macAddress());
-  for (int i = 0; i < 18; i++) {
-    if (mqttnamemac.charAt(i) == ':') {
-      //跳过冒号
-    } else {
-      mqttname += mqttnamemac.charAt(i);
-    }
-  }
-  subtopiconline = "8266/13656665087/online";
-  subtopicdownline ="8266/13656665087/downline";
-  subtopic = "8266/13656665087/#";
-  subtopic1 = "8266/13656665087/"  + chipid;
-  subtopicupdate = "8266/13656665087/"  + chipid + "/update";
-  subtopicOTA = "8266/13656665087/"  + chipid + "/OTA";
-  pubtopic = "13656665087/"  + chipid;
-  subtopic2 = subtopic.c_str();
-  pubtopic1 = pubtopic.c_str();
-  //Serial.print("subtopic2=");
-  //Serial.println(subtopic2);
-  //Serial.print("pubtopic1=");
-  //Serial.println(pubtopic1);
-//MQTT基本设定
-  client.setServer("broker.qinxinju.com", 1880);
-  client.setCallback(callback);
-  client.setKeepAlive(60);
-//显示设定
-  tm1637.set(1);
-  tm1637.init();
-//NTP时间同步设置
-  Udp.begin(localPort);
-  setSyncProvider(getNtpTime);
-  setSyncInterval(21600);//设置同步时间间隔24H，即86400s，6小时21600s
-//启动OTA升级程序
-  String espname;
-  espname = "QXJClock-" + chipid;
-  ArduinoOTA.setHostname(espname.c_str());
-  ArduinoOTA.onStart([]() {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else { // U_FS
-      type = "filesystem";
-    }
-    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
-    //Serial.println("Start updating " + type);
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    //Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
-      //Serial.println("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      //Serial.println("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      //Serial.println("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      //Serial.println("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      //Serial.println("End Failed");
-    }
-  });
-  ArduinoOTA.begin();
-  TimeUpdate();
-  testwifi();
-  wifi_set_sleep_type(LIGHT_SLEEP_T);//连上wifi后，空闲时自动进入LightSleep模式，达到省电的效果。适合不需要接收红外信号、不需要PWM输出的场景。
+extern "C" {
+  #include "user_interface.h"
 }
 
-void TimeUpdate(){
-  ld = analogRead(A0);
-  switch(ld){
-    case 0 ... 20 : ldc=0; break;
-    case 21 ... 30 : if(ldc>1){ldc=1;} break;
-    case 31 ... 70 : ldc=1; break;
-    case 71 ... 85 : if(ldc>2 || ldc==0){ldc=2;} break;
-    case 86 ... 145 : ldc=2; break;
-    case 146 ... 160 : if(ldc>3 || ldc<2){ldc=3;} break;
-    case 161 ... 260 : ldc=3; break;
-    case 261 ... 280 : if(ldc>4 || ldc<3){ldc=4;} break;
-    case 281 ... 400 : ldc=4; break;
-    case 401 ... 420 : if(ldc>5 || ldc<4){ldc=5;} break;
-    case 421 ... 550 : ldc=5; break;
-    case 551 ... 575 : if(ldc>6 || ldc<5){ldc=6;} break;
-    case 576 ... 715 : ldc=6; break;
-    case 716 ... 740 : if(ldc<6){ldc=7;} break;
-    case 741 ... 1023 : ldc=7; break;
-    default :break;
-  }
-  if(lastldc !=ldc){
-    tm1637.set(ldc);
-    lastldc =ldc;
-  }
-  timepoint =1-timepoint;
-  tm1637.point(timepoint);
-  timebc = timebc +10;//由于进入light-sleep会使millis()时间不准，所以需要补偿时间。误差大概是比实际时间慢1%,大约8-10ms之间
-  mi= (lastsec*1000+Updatetime+timebc-lasttimeupdate)/60000+lastmi;
-  hou = (mi/60+lasthou)%24;
-  mi = mi%60;
-  /*
-  int xs;
-  if(sm == 1 && ld < 5 ){
-    xs = 0;
-  }
-  if( ld > 15){
-    xs = 1;
-  }
-*/
-  if(sm == 1){
-    tm1637.point(0);
-    TimeDisp[0] = 0xff;
-    TimeDisp[1] = 0xff;
-    TimeDisp[2] = 0xff;
-    TimeDisp[3] = 0xff;
-    tm1637.display(TimeDisp);
-  }else{
-    if(hou < 10){
-      TimeDisp[0] = 0xff;
-    }else{
-      TimeDisp[0] = hou / 10;
-    }
-    TimeDisp[1] = hou % 10;
-    TimeDisp[2] = mi / 10;
-    TimeDisp[3] = mi % 10;
-    tm1637.display(TimeDisp);
-  }
-  Updatetime =millis();
-  if(hou < 13 && hou > 10){
-    digitalWrite(1,1);
-  }else{
-    digitalWrite(1,0);
-  if(mi == 29 || mi ==59){
-    if(hou < 20 && hou > 7){
-      beep =1;
-    }
-  }
-}
+const char HTTP_HEADER[] PROGMEM          = "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/><title>{v}</title>";
+const char HTTP_STYLE[] PROGMEM           = "<style>.c{text-align: center;} div,input{padding:5px;font-size:1em;} input{width:95%;} body{text-align: center;font-family:verdana;} button{border:0;border-radius:25px;background-color:{bc};color:{tc};line-height:50px;font-size:1.2rem;width:100%;} .q{float: right;width: 64px;text-align: right;} .m-user-icon{width: 100px;height: 100px;border-radius: 50px;margin: 20px auto;display:block;}}</style>";
+const char HTTP_SCRIPT[] PROGMEM          = "<script>function c(l){document.getElementById('s').value=l.innerText||l.textContent;document.getElementById('p').focus();}</script>";
+const char HTTP_HEADER_END[] PROGMEM        = "</head><body><div style='text-align:left;display:inline-block;min-width:260px;'>";
+const char HTTP_PORTAL_OPTIONS[] PROGMEM  = "<form action=\"/wifi\" method=\"get\"><button>配置 WiFi</button></form><br/><form action=\"/i\" method=\"get\"><button>设备信息</button></form><br/><form action=\"/r\" method=\"post\"><button>重置设备</button></form>";
+const char HTTP_ITEM[] PROGMEM            = "<div><a href='#p' onclick='c(this)'>{v}</a>&nbsp;<span class='q {i}'>{r}%</span></div>";
+const char HTTP_FORM_START[] PROGMEM      = "<form method='get' action='wifisave'><input id='s' name='s' length=32 placeholder='无线信号名称'><br/><input id='p' name='p' length=64 type='password' placeholder='请输入无线密码'><br/>";
+const char HTTP_FORM_PARAM[] PROGMEM      = "<br/><input id='{i}' name='{n}' maxlength={l} placeholder='{p}' value='{v}' {c}>";
+const char HTTP_FORM_END[] PROGMEM        = "<br/><button type='submit'>确认保存</button></form>";
+const char HTTP_SCAN_LINK[] PROGMEM       = "<br/><div class=\"c\"><a href=\"/wifi\">扫描</a></div>";
+const char HTTP_SAVED[] PROGMEM           = "<div>沁心居正在尝试连接网络...<br />远程控制请微信关注“沁心居”</div>";
+const char HTTP_END[] PROGMEM             = "</div></body></html>";
+const char HTTP_IMAGE[] PROGMEM             = "<img class=\"c m-user-icon\" src=\"{is}\">";
 
-void  testwifi(){
-  readtemhum();
-  if (WiFi.waitForConnectResult() == WL_CONNECTED){
-    //Serial.printf("WIFI已经连接到%s！\n", WiFi.SSID().c_str());
-    //Serial.print("IP地址: ");
-    //Serial.println(WiFi.localIP());
-    if(MQTTwaitingtime > 60000 && currentMillis - lastwificonnecttime > 60000){
-      MQTTwaitingtime = 5000;
-    }
-    lastwificonnecttime = millis();
-    if (currentMillis - lasttimeupdate > 21600000 || lasttimeupdate == 0) {//24小时：86400s，6小时21600s，1小时3600s，半小时1800s
-      if (timeStatus() == timeSet) {
-        lasthou = hour(); 
-        lastmi= minute();
-        lastsec=second();
-        //Serial.println("更新时间成功！24小时后再次更新");
-        lasttimeupdate = millis();
-        timebc =0;
-      }else {
-        //Serial.println("更新时间失败……1分钟后再次尝试更新");
-        setSyncProvider(getNtpTime);
-      }
-    }    
-  }else {
-    //Serial.println("Wifi连接中断，重连中……");
-    //wifiMulti.run();
-  }
-}
+#ifndef WIFI_MANAGER_MAX_PARAMS
+#define WIFI_MANAGER_MAX_PARAMS 10
+#endif
 
-void loop(){
-  currentMillis = millis(); //将millis()转化为unsigned long类型，防止millis()溢出导致的各种错误
-  if(currentMillis-Updatetime> 980){//1000ms刷新一次时间显示
-    TimeUpdate();
-  }
-  if (irrecv.decode(&results)) {//红外接收部分
-    if(results.value == 4294967295){//ffffffff代码不理会
-      goto irrecend;
-    }else if(results.value == 1153155900 || results.value == 3442656060){//收藏键，睡眠时是否显示
-      
-    }
-    irrecend:
-    irrecv.resume();
-  }
-  if (!client.connected()) {
-      reconnect();
-  }else{
-    client.loop();
-  }
-  if(beep == 0){
-    if (currentMillis - lastDebounceTime > 60000) { //每60秒喂狗、检查WIFI连接状态、检测温度。每24小时同步一次时间
-      ESP.wdtFeed();
-      lastDebounceTime = millis(); //喂狗时间更新
-      testwifi();
-    }
-    if (ota == 1) {
-      ArduinoOTA.handle();//启动OTA升级
-    }  
-    delay(490);//用于light sleep，不可省略
-  }else{
-    if( mi%30 == 0 ){
-      if(beep == 1){
-        analogWrite(0, 20); //打开蜂鸣器
-      }
-      if(millis() - lastbeeptime > 90){
-        beep++;
-        lastbeeptime = millis();
-        if( beep > ((mi+30)%60+30)/10 ){
-          analogWrite(0, 0); //关闭蜂鸣器
-          beep = 0;
-        }
-      }
-   }
-    delay(1);//用于model sleep，不可省略
-  }
-}
+class WiFiManagerParameter {
+  public:
+    /** 
+        Create custom parameters that can be added to the WiFiManager setup web page
+        @id is used for HTTP queries and must not contain spaces nor other special characters
+    */
+    WiFiManagerParameter(const char *custom);
+    WiFiManagerParameter(const char *id, const char *placeholder, const char *defaultValue, int length);
+    WiFiManagerParameter(const char *id, const char *placeholder, const char *defaultValue, int length, const char *custom);
+    ~WiFiManagerParameter();
+
+    const char *getID();
+    const char *getValue();
+    const char *getPlaceholder();
+    int         getValueLength();
+    const char *getCustomHTML();
+  private:
+    const char *_id;
+    const char *_placeholder;
+    char       *_value;
+    int         _length;
+    const char *_customHTML;
+
+    void init(const char *id, const char *placeholder, const char *defaultValue, int length, const char *custom);
+
+    friend class WiFiManager;
+};
 
 
-/*-------- NTP code ----------*/
-
-const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
-byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming & outgoing packets
-
-time_t getNtpTime()
+class WiFiManager
 {
-  IPAddress ntpServerIP; // NTP server's ip address
-  while (Udp.parsePacket() > 0) ; // discard any previously received packets
-  //Serial.println("Transmit NTP Request");
-  // get a random server from the pool
-  WiFi.hostByName(ntpServerName, ntpServerIP);
-  //Serial.print(ntpServerName);
-  //Serial.print(": ");
-  //Serial.println(ntpServerIP);
-  sendNTPpacket(ntpServerIP);
-  uint32_t beginWait = millis();
-  while (millis() - beginWait < 1500) {
-    int size = Udp.parsePacket();
-    if (size >= NTP_PACKET_SIZE) {
-     // Serial.println("Receive NTP Response");
-      Udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
-      unsigned long secsSince1900;
-      // convert four bytes starting at location 40 to a long integer
-      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
-      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
-      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
-      secsSince1900 |= (unsigned long)packetBuffer[43];
-      return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
+  public:
+    WiFiManager();
+    ~WiFiManager();
+
+    boolean       autoConnect();
+    boolean       autoConnect(char const *apName, char const *apPassword = NULL);
+
+    //if you want to always start the config portal, without trying to connect first
+    boolean       startConfigPortal();
+    boolean       startConfigPortal(char const *apName, char const *apPassword = NULL);
+
+    // get the AP name of the config portal, so it can be used in the callback
+    String        getConfigPortalSSID();
+
+    void          resetSettings();
+
+    //sets timeout before webserver loop ends and exits even if there has been no setup.
+    //useful for devices that failed to connect at some point and got stuck in a webserver loop
+    //in seconds setConfigPortalTimeout is a new name for setTimeout
+    void          setConfigPortalTimeout(unsigned long seconds);
+    void          setTimeout(unsigned long seconds);
+
+    //sets timeout for which to attempt connecting, useful if you get a lot of failed connects
+    void          setConnectTimeout(unsigned long seconds);
+
+
+    void          setDebugOutput(boolean debug);
+    //defaults to not showing anything under 8% signal quality if called
+    void          setMinimumSignalQuality(int quality = 8);
+    //sets a custom ip /gateway /subnet configuration
+    void          setAPStaticIPConfig(IPAddress ip, IPAddress gw, IPAddress sn);
+    //sets config for a static IP
+    void          setSTAStaticIPConfig(IPAddress ip, IPAddress gw, IPAddress sn);
+    //called when AP mode and config portal is started
+    void          setAPCallback( void (*func)(WiFiManager*) );
+    //called when settings have been changed and connection was successful
+    void          setSaveConfigCallback( void (*func)(void) );
+    //adds a custom parameter, returns false on failure
+    bool          addParameter(WiFiManagerParameter *p);
+    //if this is set, it will exit after config, even if connection is unsuccessful.
+    void          setBreakAfterConfig(boolean shouldBreak);
+    //if this is set, try WPS setup when starting (this will delay config portal for up to 2 mins)
+    //TODO
+    //if this is set, customise style
+    void          setCustomHeadElement(const char* element);
+    //if this is true, remove duplicated Access Points - defaut true
+    void          setRemoveDuplicateAPs(boolean removeDuplicates);
+    //if this is set, customise img
+    void          setHeadImgBase64(String imgBase64);
+    //if this is set, customise button color
+    void          setButtonBackground(const char* backgroundColor);
+    //if this is set, customise text color
+    void          setButtonTextColor(const char* textColor);
+    // if this is set, customise title
+    void          setPageTitle(const char* pageTitle);
+
+
+  private:
+    std::unique_ptr<DNSServer>        dnsServer;
+    std::unique_ptr<ESP8266WebServer> server;
+
+    //const int     WM_DONE                 = 0;
+    //const int     WM_WAIT                 = 10;
+
+    //const String  HTTP_HEADER = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/><title>{v}</title>";
+
+    void          setupConfigPortal();
+    void          startWPS();
+
+    const char*   _apName                 = "no-net";
+    const char*   _apPassword             = NULL;
+    String        _ssid                   = "";
+    String        _pass                   = "";
+    unsigned long _configPortalTimeout    = 0;
+    unsigned long _connectTimeout         = 0;
+    unsigned long _configPortalStart      = 0;
+
+    IPAddress     _ap_static_ip;
+    IPAddress     _ap_static_gw;
+    IPAddress     _ap_static_sn;
+    IPAddress     _sta_static_ip;
+    IPAddress     _sta_static_gw;
+    IPAddress     _sta_static_sn;
+
+    int           _paramsCount            = 0;
+    int           _minimumQuality         = -1;
+    boolean       _removeDuplicateAPs     = true;
+    boolean       _shouldBreakAfterConfig = false;
+    boolean       _tryWPS                 = false;
+
+    const char*   _customHeadElement      = "";
+    String   _imgBase64;
+    const char*   _backgroundColor        = "#1fa3ec";
+    const char*   _textColor              = "#fff";
+    const char*   _pageTitle              = "欢迎使用沁心居";
+
+    //String        getEEPROMString(int start, int len);
+    //void          setEEPROMString(int start, int len, String string);
+
+    int           status = WL_IDLE_STATUS;
+    int           connectWifi(String ssid, String pass);
+    uint8_t       waitForConnectResult();
+
+    void          handleRoot();
+    void          handleWifi(boolean scan);
+    void          handleWifiSave();
+    void          handleInfo();
+    void          handleReset();
+    void          handleNotFound();
+    void          handle204();
+    boolean       captivePortal();
+    boolean       configPortalHasTimeout();
+
+    // DNS server
+    const byte    DNS_PORT = 53;
+
+    //helpers
+    int           getRSSIasQuality(int RSSI);
+    boolean       isIp(String str);
+    String        toStringIp(IPAddress ip);
+
+    boolean       connect;
+    boolean       _debug = true;
+
+    void (*_apcallback)(WiFiManager*) = NULL;
+    void (*_savecallback)(void) = NULL;
+
+    int                    _max_params;
+    WiFiManagerParameter** _params;
+
+    template <typename Generic>
+    void          DEBUG_WM(Generic text);
+
+    template <class T>
+    auto optionalIPFromString(T *obj, const char *s) -> decltype(  obj->fromString(s)  ) {
+      return  obj->fromString(s);
     }
-  }
-  //Serial.println("No NTP Response :-(");
-  return 0; // return 0 if unable to get the time
-}
-
-// send an NTP request to the time server at the given address
-void sendNTPpacket(IPAddress &address)
-{
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;     // Stratum, or type of clock
-  packetBuffer[2] = 6;     // Polling Interval
-  packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12] = 49;
-  packetBuffer[13] = 0x4E;
-  packetBuffer[14] = 49;
-  packetBuffer[15] = 52;
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
-  Udp.beginPacket(address, 123); //NTP requests are to port 123
-  Udp.write(packetBuffer, NTP_PACKET_SIZE);
-  Udp.endPacket();
-}
-
-void update_started() {
-  //Serial.println("CALLBACK:  HTTP update process started");
-}
-
-void update_finished() {
-  //Serial.println("CALLBACK:  HTTP update process finished");
-}
-
-void update_progress(int cur, int total) {
-  //Serial.printf("CALLBACK:  HTTP update process at %d of %d bytes...\n", cur, total);
-}
-
-void update_error(int err) {
-  //Serial.printf("CALLBACK:  HTTP update fatal error code %d\n", err);
-}
-
-
-void callback (char* topic, byte* payload, unsigned int length){
-  //Serial.print("接收到消息[");
-  //Serial.print(topic);
-  //Serial.print("] ");
-  String submsg;
-  for (int i = 0; i < length; i++) {
-    submsg += (char)payload[i];
-  }
-  //Serial.println(submsg.c_str());
-  
-  String topic1=String(topic);
-  if (topic1 == subtopiconline) {//上线消息，开启状态发送，并更改订阅为本机专用订阅
-    subtopic2 = subtopic.c_str();
-    client.unsubscribe(subtopic2);
-    subtopic2 = subtopic1.c_str();
-    client.subscribe(subtopic2, 1);
-    subtopic2 = subtopiconline.c_str();
-    client.subscribe(subtopic2, 1);
-    subtopic2 = subtopicdownline.c_str();
-    client.subscribe(subtopic2, 1);
-    pu = 1;
-    pubmassage();
-  }else if(topic1 == subtopicdownline){//下线消息，关闭状态发送，并更改订阅为通用订阅.是否要发送一条假“遗嘱消息”呢？
-    if(pu == 1){
-      pu = 0;
-      subtopic2 = subtopic1.c_str();
-      client.unsubscribe (subtopic2);
-      subtopic2 = subtopiconline.c_str();
-      client.unsubscribe(subtopic2);
-      subtopic2 = subtopicdownline.c_str();
-      client.unsubscribe(subtopic2);
-      subtopic2 = subtopic.c_str();
-      client.subscribe(subtopic2, 1);
+    auto optionalIPFromString(...) -> bool {
+      DEBUG_WM("NO fromString METHOD ON IPAddress, you need ESP8266 core 2.1.0 or newer for Custom IP configuration to work.");
+      return false;
     }
-  } else if (topic1 == subtopicOTA) {
-    String submsgOTA;
-    submsgOTA += (char)payload[0];
-    if (submsgOTA == "y") {
-      //Serial.println("接收到远程打开本地OTA命令");
-      ota = 1;
-    } else {
-      digitalWrite(BUILTIN_LED, HIGH);  // Turn the LED off by making the voltage HIGH
-      ota = 0;
-    }
-  } else if (topic1 == subtopicupdate) { //接收到本机update消息后，升级固件
-    //Serial.println("Update!");
-    // Add optional callback notifiers
-    String submsgupdate;
-    for (int i = 0; i < length; i++) {
-      submsgupdate += (char)payload[i];
-    }
-    const char* updateurl = submsgupdate.c_str();
-    ESPhttpUpdate.onStart(update_started);
-    ESPhttpUpdate.onEnd(update_finished);
-    ESPhttpUpdate.onProgress(update_progress);
-    ESPhttpUpdate.onError(update_error);
-    t_httpUpdate_return ret = ESPhttpUpdate.update(espClient, updateurl);
-    switch (ret) {
-      case HTTP_UPDATE_FAILED:
-        //Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
-        break;
+};
 
-      case HTTP_UPDATE_NO_UPDATES:
-        //Serial.println("HTTP_UPDATE_NO_UPDATES");
-        break;
-
-      case HTTP_UPDATE_OK:
-        //Serial.println("HTTP_UPDATE_OK");
-        break;
-    }
-  }else if (topic1 == subtopic1) {//接收到本机专用订阅消息后，做出相应遥控动作
-    //Serial.println("Topic is right!");
-    int subMSG1, subMSG2;
-    String submsg0, submsg1, submsg2;
-    submsg0 += (char)payload[0];
-    if (submsg0 == "0") {
-      readtemhum();
-      //Serial.println("接收到远程状态查询命令，状态已发送");
-    } else if (submsg0 == "8") {
-      ESP.restart();
-    } else if (submsg0 == "9") {
-//      WiFiManager wifiManager;
-//      wifiManager.resetSettings();
-      ESP.reset();
-    } else if (submsg0 == "A") {
-      //Serial.println("接收到远程解锁命令(解锁程序未设定)");
-    }else if (submsg0 == "T") { //接收到温度校准指令
-      //Serial.println("接收到远程温度校准指令，正在执行");
-      String msg;
-      if (length != (3)) {
-        //Serial.println("指令错误!");
-        goto callbackend;//跳到callback的最后循环
-      }else{
-        submsg1 += (char)payload[1]; //温度
-        submsg1 += (char)payload[2];
-        subMSG1 = submsg1.toInt();
-        int wdt = EEPROM.read(1); //读取温度校准数据
-        subMSG1 = wd + wdt - subMSG1;
-        wd = wd + wdt - subMSG1;
-        EEPROM.write(1, subMSG1);
-        if (EEPROM.commit()) {
-          //Serial.println("温度校准成功");
-        } else {
-          //Serial.println("温度校准失败！");
-        }
-      }
-    }else if (submsg0 == "3") { //接收到空调遥控指令
-      //Serial.println("接收到远程空调遥控指令，正在执行");
-      String msg;
-      if (length != (4)) {
-        //Serial.println("指令错误!");
-        goto callbackend;//跳到callback的最后循环
-      }
-      int ktpp = EEPROM.read(0); //读取空调品牌
-      submsg1 += (char)payload[1]; //空调设定温度/品牌
-      submsg1 += (char)payload[2];
-      subMSG1 = submsg1.toInt();
-      submsg2 += (char)payload[3]; //空调指令码
-      if (submsg2 == "c") { //设置空调品牌
-        ktpp = subMSG1;
-        EEPROM.write(0, subMSG1);
-        if (EEPROM.commit()) {
-          //Serial.println("空调品牌设置成功");
-        } else {
-          //Serial.println("空调品牌设置失败！");
-        }
-        goto callbackend;//跳到callback的最后循环
-      }
-      if (ktpp == 1) {
-        //Serial.println("Setting desired state for A/C.");
-        if (submsg2 == "1") {
-          haier.on();
-          msg+= "空调开启,";
-        } else {
-          haier.off();
-          msg+= "空调关闭,";
-        }
-        if(subMSG1>lastwd){
-          haier.setMode(kHaierAcYrw02Cool);
-          msg+= "制冷模式,";
-        } else {
-          haier.setMode(kHaierAcYrw02Heat);
-          msg+= "制热模式,";
-        }
-        haier.setFan(kHaierAcYrw02FanAuto);
-        // kHaierAuto(自动), kHaierDry(除湿), kHaierCool(制冷), kHaierFan(风扇模式), kHaierHeat(制热)
-        haier.setTemp(subMSG1);  // 16-30C
-        msg+= "设定温度：";
-        msg+= subMSG1;
-        haier.setSwing(kHaierAcYrw02SwingHAuto);
-#if SEND_HAIER_AC_YRW02
-        //Serial.println("Sending IR command to A/C ...");
-        haier.send();
-#endif  // SEND_HAIER_AC
-        // Display the settings.
-        //Serial.println("Haier A/C remote is in the following state:");
-        //Serial.printf("  %s\n", haier.toString().c_str());
-        // Display the encoded IR sequence.显示编码的红外序列。
-        unsigned char* ir_code = haier.getRaw();
-        //Serial.print("IR Code: 0x");
-        for (uint8_t i = 0; i < kHaierACYRW02StateLength; i++){
-          //Serial.printf("%02X", ir_code[i]);
-        }
-        //Serial.println();
-      } else if (ktpp == 2) {
-        //Serial.println("Setting desired state for A/C.");
-        if (submsg2 == "1") {
-          ac.on();
-          msg+= "空调开启,";
-        } else {
-          ac.off();
-          msg+= "空调关闭,";
-        }
-        if(subMSG1>lastwd){
-          ac.setMode(kGreeCool);
-          msg+= "制冷模式,";
-        } else {
-          ac.setMode(kGreeHeat);
-          msg+= "制热模式,";
-        }
-        ac.setFan(1);
-        // kGreeAuto(自动), kGreeDry(除湿), kGreeCool(制冷), kGreeFan(风扇模式), kGreeHeat(制热)
-        ac.setTemp(subMSG1);  // 16-30C
-        msg+= "设定温度：";
-        msg+= subMSG1;
-        ac.setSwingVertical(true, kGreeSwingAuto);
-        ac.setXFan(false);
-        ac.setLight(true);
-        ac.setSleep(false);
-        ac.setTurbo(false);
-#if SEND_GREE
-        //Serial.println("Sending IR command to A/C ...");
-        ac.send();
-#endif  // SEND_GREE
-        // Display the settings.
-        //Serial.println("GREE A/C remote is in the following state:");
-        //Serial.printf("  %s\n", ac.toString().c_str());
-        // Display the encoded IR sequence.显示编码的红外序列。
-        unsigned char* ir_code = ac.getRaw();
-        //Serial.print("IR Code: 0x");
-        for (uint8_t i = 0; i < kGreeStateLength; i++){
-          //Serial.printf("%02X", ir_code[i]);
-        }
-        //Serial.println();
-      } else {
-        //Serial.println("未设定空调品牌或未知空调品牌，无法执行空调遥控指令！");
-        client.publish(pubtopic1, "未设定空调品牌或未知空调品牌，无法执行空调遥控指令！");
-        goto callbackend;//跳到callback的最后循环
-      }
-    } else {
-      //Serial.println("接收到远程锁定命令(锁定程序未设定)");
-    }
-    callbackend:
-    pubmassage();
-    //Serial.println("远程指令执行结束");
-  }
-}
-
-
-void reconnect() {
-  // Loop until we're reconnected
-if (!client.connected() && currentMillis - lastfailedMQTTtime > MQTTwaitingtime) {
-    //Serial.print("正在尝试连接到MQTT服务器中...");
-    // Create a random client ID
-    if (client.connect(mqttid.c_str(), mqttname.c_str(), mqttpas.c_str(),pubtopic1, 2, 1, "d", 1)) { //（客户端ID，[用户名，密码]，[遗嘱消息主题，遗嘱消息QoS，遗嘱消息是否服务器保留，遗嘱消息内容]，[cleanSession]）
-      //Serial.println("连接服务器成功！");
-      // Once connected, publish an announcement...
-      client.publish(pubtopic1, subtopic1.c_str());
-      // ... and resubscribe
-      /*subtopic2 = subtopic.c_str();
-      client.unsubscribe(subtopic2);
-      subtopic2 = subtopic1.c_str();
-      client.unsubscribe (subtopic2);
-      delay(100);*/
-      subtopic2 = subtopic.c_str();
-      client.subscribe(subtopic2, 1);
-      MQTTwaitingtime = 5000;
-      pubmassage();
-    } else {
-      //Serial.print("连接服务器失败, rc=");
-      //Serial.print(client.state());
-      //Serial.println();
-      switch (MQTTwaitingtime) { //根据前一次等待时间确定本次等待时间
-        case 0 : MQTTwaitingtime = 5000;  break;//Serial.println("5秒后重新尝试连接到服务器"); break;
-        case 5000 : MQTTwaitingtime = 10000;  break;//Serial.println("10秒后重新尝试连接到服务器"); break;
-        case 10000 : MQTTwaitingtime = 30000;  break;//Serial.println("30秒后重新尝试连接到服务器"); break;
-        case 30000 : MQTTwaitingtime = 120000;  break;//Serial.println("2分钟后重新尝试连接到服务器"); break;
-        case 120000 : MQTTwaitingtime = 600000;  break;//Serial.println("10分钟后重新尝试连接到服务器"); break;
-        case 600000 : MQTTwaitingtime = 1800000;  break;//Serial.println("30分钟后重新尝试连接到服务器"); break;
-        case 1800000 : MQTTwaitingtime = 3600000;  break;//Serial.println("1小时后重新尝试连接到服务器"); break;
-        default:
-          MQTTwaitingtime = 3600000; break;//Serial.println("1小时后重新尝试连接到服务器"); break;
-      }
-      lastfailedMQTTtime = millis();
-    }
-  }
-}
-
-
-void pubmassage() {
-    String msg;
-  msg +="硬件版本：";
-  msg += yjbb;
-  msg +="；固件版本：";
-  msg += gjbb;
-  msg +="；温度：";
-  msg += wd;
-  msg +="℃；环境亮度：";
-  msg += ld;
-  msg +="；时钟亮度：";
-  msg += ldc;
-  msg +="；上次校时时间： ";
-  msg += lasthou;
-  msg +=":";
-  msg += lastmi;
-  msg +=":";
-  msg += lastsec;
-  msg +="；当前时间： ";
-  Updatetime = millis();
-  mi= (lastsec*1000+Updatetime+timebc-lasttimeupdate)/60000+lastmi;
-  hou = (mi/60+lasthou)%24;
-  msg += hou;
-  msg +=":";
-  mi = mi%60;
-  msg += mi;
-  msg +=":";
-  int sec;
-  sec = (lastsec+(Updatetime+timebc-lasttimeupdate)/1000)%60;
-  msg += sec;
-  const char* pubmsg = msg.c_str();
-  //      msg=硬件版本5+固件版本3+温度2+环境亮度3+时钟亮度1
-  //Serial.print("发送消息: ");
-  //Serial.println(pubmsg);
-  client.publish(pubtopic1, pubmsg);
-}
-
-
-void readtemhum(){
-  ld = analogRead(A0);
-  pinMode(16, OUTPUT); //设置GPIO16为输出（测温、测量度切换，高电位为温度，输入为亮度）Rr=（3.3-V1）*（3.3-V2）/[3.3*(V2-V1)]
-  digitalWrite(16,1);
-  delay(1);
-  int Rr,Aw;
-  Aw = analogRead(A0);
-  pinMode(16,INPUT); //设置GPIO16为输入（测温、测量度切换，高电位为温度，输入为亮度）
-  float ldf=float(ld);
-  float Awf=float(Aw);
-  float Rrf=1000*(3441-ldf)*(3441-Awf)/(3441*(Awf-ldf));
-  wd =1/( 1/298.15 - log(10000/Rrf)/3435)-273.15-4.7;//4.7是没风时的温度校准系数。
-  if(lastwd != wd){
-    if(pu == 1){
-      pubmassage();
-    }
-  }
-}
+#endif
