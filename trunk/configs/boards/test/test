@@ -11,7 +11,7 @@
    Licensed under MIT license
  **************************************************************/
 
-#include "ESPAsyncWiFiManager.h"
+#include "ESPAsyncWiFiManagerRY.h"
 
 AsyncWiFiManagerParameter::AsyncWiFiManagerParameter(const char *custom)
 {
@@ -130,12 +130,14 @@ void AsyncWiFiManager::setupConfigPortal()
   }
 
   // optional soft ip config
+  // 配置自定义固定AP信息
   if (_ap_static_ip)
   {
     DEBUG_WM(F("Custom AP IP/GW/Subnet"));
     WiFi.softAPConfig(_ap_static_ip, _ap_static_gw, _ap_static_sn);
   }
 
+  // 配置AP热点
   if (_apPassword != NULL)
   {
     WiFi.softAP(_apName, _apPassword); // password option
@@ -150,6 +152,7 @@ void AsyncWiFiManager::setupConfigPortal()
   DEBUG_WM(WiFi.softAPIP());
 
 // setup the DNS server redirecting all the domains to the apIP
+  // 配置DNS 重定向功能 全部请求都重定向到AP
 #ifdef USE_EADNS
   dnsServer->setErrorReplyCode(AsyncDNSReplyCode::NoError);
 #else
@@ -163,6 +166,7 @@ void AsyncWiFiManager::setupConfigPortal()
   setInfo();
 
   // setup web pages: root, wifi config pages, SO captive portal detectors and not found
+  // 配置Web服务器的功能 这里就是实现AP配网功能
   server->on("/",
              std::bind(&AsyncWiFiManager::handleRoot, this, std::placeholders::_1))
       .setFilter(ON_AP_FILTER);
@@ -369,7 +373,7 @@ void AsyncWiFiManager::copySSIDInfo(wifi_ssid_count_t n)
   else if (n == 0)
   {
     DEBUG_WM(F("No networks found"));
-    // page += F("No networks found. Refresh to scan again.");
+    // page += F("找不到网络，请重新扫描.");
   }
   else
   {
@@ -882,6 +886,7 @@ void AsyncWiFiManager::setBreakAfterConfig(boolean shouldBreak)
 }
 
 // handle root or redirect to captive portal
+//功能描述：响应root请求，也就是ip请求
 void AsyncWiFiManager::handleRoot(AsyncWebServerRequest *request)
 {
   // AJS - maybe we should set a scan when we get to the root???
@@ -908,7 +913,7 @@ void AsyncWiFiManager::handleRoot(AsyncWebServerRequest *request)
   page += "<h1>";
   page += _apName;
   page += "</h1>";
-  page += F("<h3>AsyncWiFiManager</h3>");
+  page += F("<h3>如茵花草浇水Wifi设置</h3>");
   page += FPSTR(HTTP_PORTAL_OPTIONS);
   page += _customOptionsElement;
   page += FPSTR(HTTP_END);
@@ -918,6 +923,8 @@ void AsyncWiFiManager::handleRoot(AsyncWebServerRequest *request)
 }
 
 // wifi config page handler
+//功能描述：wifi配置页面
+
 void AsyncWiFiManager::handleWifi(AsyncWebServerRequest *request, boolean scan)
 {
   shouldscan = true;
@@ -926,7 +933,7 @@ void AsyncWiFiManager::handleWifi(AsyncWebServerRequest *request, boolean scan)
   DEBUG_WM(F("Handle wifi"));
 
   String page = FPSTR(WFM_HTTP_HEAD);
-  page.replace("{v}", "Config ESP");
+  page.replace("{v}", "如茵花草浇水配置");
   page += FPSTR(HTTP_SCRIPT);
   page += FPSTR(HTTP_STYLE);
   page += _customHeadElement;
@@ -940,7 +947,7 @@ void AsyncWiFiManager::handleWifi(AsyncWebServerRequest *request, boolean scan)
     if (wifiSSIDCount == 0)
     {
       DEBUG_WM(F("No networks found"));
-      page += F("No networks found. Refresh to scan again");
+      page += F("找不到网络，请重新扫描.");
     }
     else
     {
@@ -1043,6 +1050,7 @@ void AsyncWiFiManager::handleWifi(AsyncWebServerRequest *request, boolean scan)
 }
 
 // handle the WLAN save form and redirect to WLAN config page again
+//功能描述：保存wifi设置
 void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
 {
   DEBUG_WM(F("WiFi save"));
@@ -1107,7 +1115,7 @@ void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
   }
 
   String page = FPSTR(WFM_HTTP_HEAD);
-  page.replace("{v}", "Credentials Saved");
+  page.replace("{v}", "配置保存成功");
   page += FPSTR(HTTP_SCRIPT);
   page += FPSTR(HTTP_STYLE);
   page += _customHeadElement;
@@ -1127,14 +1135,14 @@ void AsyncWiFiManager::handleWifiSave(AsyncWebServerRequest *request)
 String AsyncWiFiManager::infoAsString()
 {
   String page;
-  page += F("<dt>Chip ID</dt><dd>");
+  page += F("<dt>设备编号：</dt><dd>");
 #if defined(ESP8266)
   page += ESP.getChipId();
 #else
   page += getESP32ChipID();
 #endif
   page += F("</dd>");
-  page += F("<dt>Flash Chip ID</dt><dd>");
+  page += F("<dt>校验码：</dt><dd>");
 #if defined(ESP8266)
   page += ESP.getFlashChipId();
 #else
@@ -1144,17 +1152,17 @@ String AsyncWiFiManager::infoAsString()
   page += F("<dt>IDE Flash Size</dt><dd>");
   page += ESP.getFlashChipSize();
   page += F(" bytes</dd>");
-  page += F("<dt>Real Flash Size</dt><dd>");
+  page += F("<dt>闪存容量：</dt><dd>");
 #if defined(ESP8266)
   page += ESP.getFlashChipRealSize();
 #else
   page += F("N/A for ESP32");
 #endif
   page += F(" bytes</dd>");
-  page += F("<dt>Soft AP IP</dt><dd>");
+  page += F("<dt>配网地址：</dt><dd>");
   page += WiFi.softAPIP().toString();
   page += F("</dd>");
-  page += F("<dt>Soft AP MAC</dt><dd>");
+  page += F("<dt>AP物理地址</dt><dd>");
   page += WiFi.softAPmacAddress();
   page += F("</dd>");
   page += F("<dt>Station SSID</dt><dd>");
@@ -1163,7 +1171,7 @@ String AsyncWiFiManager::infoAsString()
   page += F("<dt>Station IP</dt><dd>");
   page += WiFi.localIP().toString();
   page += F("</dd>");
-  page += F("<dt>Station MAC</dt><dd>");
+  page += F("<dt>Sta物理地址：</dt><dd>");
   page += WiFi.macAddress();
   page += F("</dd>");
   page += F("</dl>");
@@ -1175,7 +1183,7 @@ void AsyncWiFiManager::handleInfo(AsyncWebServerRequest *request)
   DEBUG_WM(F("Info"));
 
   String page = FPSTR(WFM_HTTP_HEAD);
-  page.replace("{v}", "Info");
+  page.replace("{v}", "设备信息");
   page += FPSTR(HTTP_SCRIPT);
   page += FPSTR(HTTP_STYLE);
   page += _customHeadElement;
@@ -1205,12 +1213,12 @@ void AsyncWiFiManager::handleReset(AsyncWebServerRequest *request)
   DEBUG_WM(F("Reset"));
 
   String page = FPSTR(WFM_HTTP_HEAD);
-  page.replace("{v}", "Info");
+  page.replace("{v}", "正在重启...");
   page += FPSTR(HTTP_SCRIPT);
   page += FPSTR(HTTP_STYLE);
   page += _customHeadElement;
   page += FPSTR(HTTP_HEAD_END);
-  page += F("Module will reset in a few seconds");
+  page += F("设备已重置，正在重启，请稍等...");
   page += FPSTR(HTTP_END);
   request->send(200, "text/html", page);
 
@@ -1233,7 +1241,7 @@ void AsyncWiFiManager::handleNotFound(AsyncWebServerRequest *request)
     return;
   }
 
-  String message = "File Not Found\n\n";
+  String message = "找不到页面\n\n";
   message += "URI: ";
   message += request->url();
   message += "\nMethod: ";
