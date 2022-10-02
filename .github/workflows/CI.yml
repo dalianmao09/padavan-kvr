@@ -27,13 +27,13 @@ jobs:
       matrix:
         include:
           - build_variant: "mt7620"
-            targets: "PSG1218 NEWIFI-MINI"
+            targets: "PSG1218-AP NEWIFI-MINI"
           - build_variant: "mt7628"
             targets: "MZ-R13P"
           - build_variant: "mt7621"
             targets: "K2P_nano"
           - build_variant: "mt7621-usb"
-            targets: "NEWIFI3 B70"
+            targets: "NEWIFI3 B70-KVR"
     steps:
       - uses: actions/checkout@v2
       - name: Prepare environment
